@@ -4,12 +4,13 @@ import torch
 from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
+from transformers import BertModel
 
 class AsymmetricLossOptimized(nn.Module):
     ''' Notice - optimized version, minimizes memory allocation and gpu uploading,
     favors inplace operations'''
 
-    def __init__(self, gamma_neg=4, gamma_pos=1, clip=0.05, eps=1e-8, disable_torch_grad_focal_loss=False):
+    def __init__(self, gamma_neg=4, gamma_pos=0, clip=0.05, eps=1e-8, disable_torch_grad_focal_loss=False):
         super(AsymmetricLossOptimized, self).__init__()
 
         self.gamma_neg = gamma_neg
@@ -64,8 +65,6 @@ class Embedding(torch.nn.Module):
 
         self.config = config
 
-        self.vec = torch.FloatTensor(self.config.vec)
-
         self.use_entity_embed = self.config.use_entity_embed
         self.use_coref_embed = self.config.use_coref_embed
 
@@ -85,8 +84,6 @@ class Embedding(torch.nn.Module):
 
         self.dis_embed_dim = self.config.dis_embed_dim
 
-        self.embedding = nn.Embedding.from_pretrained(self.vec, freeze=True)
-
         self.entity_embedding = nn.Embedding(self.entity_embed_size, self.entity_embed_dim, padding_idx=0)
         self.coref_embedding = nn.Embedding(self.coref_embed_size, self.coref_embed_dim, padding_idx=0)
 
@@ -98,11 +95,12 @@ class Embedding(torch.nn.Module):
         return
 
     def forward(self, x, ner, pos):
-        x_embed = self.embedding(x)
 
         if self.use_entity_embed:
             ner_embed = self.entity_embedding(ner)
-            x_embed = torch.cat([x_embed, ner_embed], dim=-1)
+            x_embed = torch.cat([x, ner_embed], dim=-1)
+        else:
+            assert 0 == 1
 
         # if self.use_coref_embed:
         #     coref_embed = self.coref_embedding(pos)
@@ -128,23 +126,19 @@ class MLP(torch.nn.Module):
         return x
 
 class Context_Encoder(torch.nn.Module):
-    def __init__(self, config):
+    def __init__(self):
         super(Context_Encoder, self).__init__()
 
-        self.config = config
-
-        self.input_size = self.config.cencode_input_dim
-        self.hidden_dim = self.config.cencode_hidden_dim
-
-        self.encoder = nn.LSTM(self.input_size, self.hidden_dim // 2, num_layers=1, batch_first=True, bidirectional=True)
+        self.encoder = BertModel.from_pretrained('scibert_scivocab_uncased')
 
         return
 
-    def forward(self, x, x_len):
+    def forward(self, input_ids, mask, pos_ids):
 
-        packed_x = pack_padded_sequence(x, x_len, batch_first=True, enforce_sorted=False)
-        packed_outs, (hidden, _) = self.encoder(packed_x)
-        outs, _ = pad_packed_sequence(packed_outs, batch_first=True, total_length=x_len.max())
+        outs = self.encoder(input_ids, attention_mask=mask, position_ids=pos_ids,
+                            token_type_ids=torch.zeros_like(pos_ids, device=pos_ids.device, dtype=torch.long))[0]
+
+        outs = outs[:, 1:-1]
 
         return outs
 
@@ -194,25 +188,25 @@ class BiasGatLayer(torch.nn.Module):
         B, _, M = x.size()
         B, _, N = y.size()
 
-        if self.in_dropout_rate != 0:
-            x = self.in_dropout(x)
-            y = self.in_dropout(y)
-
         x_f = self.x_conv1(x)
         y_f = self.y_conv1(y)
+
+        if self.in_dropout_rate != 0:
+            x_f = self.in_dropout(x_f)
+            y_f = self.in_dropout(y_f)
 
         x_self = self.x_conv2(x_f)
         y_other = self.y_conv2(y_f)
 
         logist = self.leakyrelu(x_self + torch.transpose(y_other, 2, 1))
-        if self.out_dropout_rate != 0.0:
-            logist = self.out_dropout(logist)
+        # if self.out_dropout_rate != 0.0:
+        #     logist = self.out_dropout(logist)
 
         logist = logist.unsqueeze(1)
 
-        if self.in_dropout_rate != 0.0:
-            x_f = self.in_dropout(x_f)
-            y_f = self.in_dropout(y_f)
+        # if self.in_dropout_rate != 0.0:
+        #     x_f = self.in_dropout(x_f)
+        #     y_f = self.in_dropout(y_f)
 
         rets = []
         for i in range(entity_num):
@@ -222,8 +216,8 @@ class BiasGatLayer(torch.nn.Module):
             cur_path_embed = path_embed_layer(cur_path_mat).permute(0, 3, 1, 2)
             cur_path_logist = self.leakyrelu(self.p_conv(cur_path_embed))
 
-            if self.out_dropout_rate != 0.0:
-                cur_path_logist = self.out_dropout(cur_path_logist)
+            # if self.out_dropout_rate != 0.0:
+            #     cur_path_logist = self.out_dropout(cur_path_logist)
 
             local_coefs = logist + cur_path_logist + cur_bias_mat
 
@@ -253,8 +247,8 @@ class BiasGatLayer(torch.nn.Module):
         edge_embed = edge_embed_layer(edge_mat).permute(0, 3, 1, 2)
         edge_logist = self.leakyrelu(self.e_conv(edge_embed))
 
-        if self.out_dropout_rate != 0.0:
-            edge_logist = self.out_dropout(edge_logist)
+        # if self.out_dropout_rate != 0.0:
+        #     edge_logist = self.out_dropout(edge_logist)
 
         m_bias_mat = m_bias_mat.unsqueeze(1)
 
@@ -268,8 +262,12 @@ class BiasGatLayer(torch.nn.Module):
         out_y = torch.matmul(F.softmax(global_coefs.transpose(2, 3), -1), x.view(B, M, 1, -1).transpose(1,2))
         out_y = out_y.transpose(1, 2).contiguous().view(B, N, -1)
 
-        out_x = self.leakyrelu(out_x + x)
-        out_y = self.leakyrelu(out_y + y)
+        # out_x = self.leakyrelu(out_x + x)
+        # out_y = self.leakyrelu(out_y + y)
+
+        if self.out_dropout_rate != 0.0:
+            out_x = self.out_dropout(out_x)
+            out_y = self.out_dropout(out_y)
 
         if self.residual:
             out_x = out_x.transpose(1, 2) + ori_x
@@ -288,7 +286,7 @@ class BiasGat(torch.nn.Module):
         self.en_embed_dim = config.en_embed_dim
         self.me_embed_dim = config.me_embed_dim
 
-        self.dropout_rate = config.dropout_rate
+        self.dropout_rate = config.gat_drop_rate
         self.residual = config.residual
 
         self.layer_num = config.layer_num
@@ -367,7 +365,7 @@ class Model_GAT(torch.nn.Module):
         self.config = config
 
         self.embed_layer = Embedding(config=self.config)
-        self.encode_layer = Context_Encoder(config=self.config)
+        self.bert = BertModel.from_pretrained("scibert_scivocab_uncased")
 
         self.bias_gat_layer = BiasGat(config=self.config)
 
@@ -384,16 +382,21 @@ class Model_GAT(torch.nn.Module):
 
         return
 
-    def forward(self, x, ner, pos, x_lens, w2m_mapping,
+    def forward(self, input_ids, pos_ids, ner, pos, w2m_mapping,
                 m_bias_mat, m_edge_mat, p_bias_mat, p_edge_mat,
                 m2e_mapping, dis):
 
-        # Embedding
-        embed_x = self.embed_layer(x, ner, pos)
-        embed_x = self.embed_dropout(embed_x)
 
-        # Encoder
-        encode_x = self.encode_layer(embed_x, x_lens)
+        # Bert Layer
+        mask = input_ids.ne(0)
+        encode_x = self.bert(input_ids, attention_mask=mask, position_ids=pos_ids,
+                                token_type_ids=torch.zeros_like(pos_ids, device=pos_ids.device, dtype=torch.long))[0]
+
+        encode_x = encode_x[:, 1:-1]
+
+        # Embedding
+        encode_x = self.embed_layer(encode_x, ner, pos)
+        encode_x = self.embed_dropout(encode_x)
 
         # MaxPool Layer
         min_m_value = torch.min(encode_x).item()
@@ -408,8 +411,10 @@ class Model_GAT(torch.nn.Module):
 
         dis_embed = self.embed_layer.dis_embedding(dis)
 
-        pre_out = torch.cat([encode_mention.unsqueeze(2).repeat_interleave(N, 2), encode_mention.unsqueeze(1).repeat_interleave(N, 1), dis_embed],
-                            dim=-1).permute(0, 3, 1, 2).contiguous()
+        # pre_out = torch.cat([encode_mention.unsqueeze(2).repeat_interleave(N, 2), encode_mention.unsqueeze(1).repeat_interleave(N, 1), dis_embed],
+        #                     dim=-1).permute(0, 3, 1, 2).contiguous()
+
+        pre_out = dis_embed.permute(0, 3, 1, 2)
 
         encode_mention = encode_mention.transpose(1, 2)
         sub_men, obj_men, men2rel_fea = self.bias_gat_layer(encode_mention, encode_mention, m_bias_mat,
