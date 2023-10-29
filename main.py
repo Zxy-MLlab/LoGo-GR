@@ -6,9 +6,14 @@ import torch.optim as optim
 from torch.optim import lr_scheduler
 from sklearn.metrics import auc
 import random
+import time
+from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 
-from model import Config, Model
+from model import Config
+from model import Model
 import processing
+
+data_fix = ['CDR_TrainingSet.PubTator.json', 'CDR_DevelopmentSet.PubTator.json', 'CDR_TestSet.PubTator.json']
 
 
 class Accuracy(object):
@@ -33,29 +38,19 @@ class Accuracy(object):
 
 
 def read_vec(origin_path):
-    vec_path = origin_path + '/' + 'vec.npy'
-
-    vec = np.load(vec_path, allow_pickle=True)
-
-    word2id_path = origin_path + '/' + 'word2id.json'
-
-    word2id = json.load(open(word2id_path, 'r'))
 
     ner2id_path = origin_path + '/' + 'ner2id.json'
 
     ner2id = json.load(open(ner2id_path, 'r'))
 
-    id2rel_path = origin_path + '/' + 'id2rel.json'
-
-    id2rel = json.load(open(id2rel_path, 'r'))
-
-    return vec, word2id, ner2id, id2rel
+    return ner2id
 
 
 def read_data(origin_path):
-    train_data_path = origin_path + '/' + 'dev_train.json'
-    dev_data_path = origin_path + '/' + 'dev_dev.json'
-    test_data_path = origin_path + '/' + 'dev_test.json'
+
+    train_data_path = origin_path + '/' + data_fix[0]
+    dev_data_path = origin_path + '/' + data_fix[1]
+    test_data_path = origin_path + '/' + data_fix[2]
 
     train_data = json.load(open(train_data_path, 'r'))
     dev_data = json.load(open(dev_data_path, 'r'))
@@ -63,6 +58,38 @@ def read_data(origin_path):
 
     return train_data, dev_data, test_data
 
+def view(data):
+    max_mention_num = 0
+    max_entity_num = 0
+
+    label_num = 0
+
+    for d in data:
+        mention_num = 0
+        entity_num = 0
+
+        for vertex in d['vertexSet']:
+            m_n = len(vertex)
+            mention_num = mention_num + m_n
+
+        e_n = len(d['vertexSet'])
+        entity_num = entity_num + e_n
+
+        max_mention_num = max(max_mention_num, mention_num)
+
+        max_entity_num = max(max_entity_num, entity_num)
+
+        l_n = len(d['labels'])
+        label_num = label_num + l_n
+
+    return max_mention_num, max_entity_num, label_num
+
+def seed_everywhere(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    np.random.seed(seed)  # Numpy module.
+    random.seed(seed)  # Python random module.
 
 def logging(s, print_=True):
     if print_:
@@ -85,31 +112,30 @@ def train(train_set, train_index, model, criterion, optimizer, scheduler):
     for i in train_index:
         batch_data = train_set[i]
 
-        x_len = batch_data[12]
-
         if use_gpu:
-            batch_data = [data.cuda() for data in batch_data[: -1]]
+            batch_data = [data.cuda() for data in batch_data]
 
-        x = batch_data[0]
-        pos = batch_data[1]
-        ner = batch_data[2]
-        w2m_mapping = batch_data[3]
-        mention_bias_mat = batch_data[4]
-        mention_edge_mat = batch_data[5]
-        m2e_mapping = batch_data[6]
-        path_bias_mat = batch_data[7]
-        path_edge_mat = batch_data[8]
-        ht_pos = batch_data[9]
-        relation_multi_label = batch_data[10]
-        relation_mask = batch_data[11]
+        input_ids = batch_data[0]
+        pos_ids = batch_data[1]
+        pos = batch_data[2]
+        ner = batch_data[3]
+        w2m_mapping = batch_data[4]
+        mention_bias_mat = batch_data[5]
+        mention_edge_mat = batch_data[6]
+        m2e_mapping = batch_data[7]
+        path_bias_mat = batch_data[8]
+        path_edge_mat = batch_data[9]
+        ht_pos = batch_data[10]
+        relation_multi_label = batch_data[11]
+        relation_mask = batch_data[12]
 
         dis = ht_pos
 
         predict_re = model(
-            x=x,
+            input_ids=input_ids,
+            pos_ids=pos_ids,
             ner=ner,
             pos=pos,
-            x_lens=x_len,
             w2m_mapping=w2m_mapping,
             m_bias_mat=mention_bias_mat,
             m_edge_mat=mention_edge_mat,
@@ -132,7 +158,7 @@ def train(train_set, train_index, model, criterion, optimizer, scheduler):
 
         loss_list.append(loss.cpu().item())
 
-    scheduler.step()
+        scheduler.step()
 
     mean_loss = np.mean(loss_list)
 
@@ -162,34 +188,35 @@ def devel(epoch, dev_set, model, criterion, optimizer):
 
     with torch.no_grad():
         for i, batch_data in enumerate(dev_set):
-            x_len = batch_data[19]
 
             if use_gpu:
-                batch_data = [data.cuda() for data in batch_data[: -5]]
+                batch_data = [data.cuda() for data in batch_data[: -4]]
 
-            x = batch_data[0]
-            pos = batch_data[1]
-            ner = batch_data[2]
-            w2m_mapping = batch_data[3]
-            mention_bias_mat = batch_data[4]
-            mention_edge_mat = batch_data[5]
-            m2e_mapping = batch_data[6]
-            path_bias_mat = batch_data[7]
-            path_edge_mat = batch_data[8]
-            ht_pos = batch_data[9]
-            intra_mask = batch_data[10]
-            inter_mask = batch_data[11]
-            intrain_mask = batch_data[12]
-            relation_multi_label = batch_data[13]
-            relation_mask = batch_data[14]
+            input_ids = batch_data[0]
+            pos_ids = batch_data[1]
+            pos = batch_data[2]
+            ner = batch_data[3]
+            w2m_mapping = batch_data[4]
+            mention_bias_mat = batch_data[5]
+            mention_edge_mat = batch_data[6]
+            m2e_mapping = batch_data[7]
+            path_bias_mat = batch_data[8]
+            path_edge_mat = batch_data[9]
+            ht_pos = batch_data[10]
+            intra_mask = batch_data[11]
+            inter_mask = batch_data[12]
+            intrain_mask = batch_data[13]
+            relation_multi_label = batch_data[25]
+            relation_mask = batch_data[26]
+            predict_mask = batch_data[27]
 
             dis = ht_pos
 
             outputs = model(
-                x=x,
+                input_ids=input_ids,
+                pos_ids=pos_ids,
                 ner=ner,
                 pos=pos,
-                x_lens=x_len,
                 w2m_mapping=w2m_mapping,
                 m_bias_mat=mention_bias_mat,
                 m_edge_mat=mention_edge_mat,
@@ -207,11 +234,24 @@ def devel(epoch, dev_set, model, criterion, optimizer):
 
             loss_list.append(loss.cpu().item())
 
+            b, N, _ = predict_mask.size()
+            predict_mask = predict_mask.data.cpu().numpy()
+            outputs = outputs.data.cpu().numpy()
+            for b_i in range(b):
+                for s_i in range(N):
+                    for o_i in range(N):
+                        if predict_mask[b_i][s_i][o_i] == False:
+                            outputs[b_i][s_i][o_i] = [0.999, 0.001]
+
+            outputs = torch.FloatTensor(outputs).to(input_ids.device)
+
+
             labels = relation_multi_label[..., 1:][relation_mask].contiguous().view(-1)
             outputs = outputs[..., 1:][relation_mask].contiguous().view(-1)
             intra_mask = intra_mask[..., 1:][relation_mask].contiguous().view(-1)
             inter_mask = inter_mask[..., 1:][relation_mask].contiguous().view(-1)
             intrain_mask = intrain_mask[..., 1:][relation_mask].contiguous().view(-1)
+
             label_result.append(labels)
             test_result.append(outputs)
             intrain_list.append(intrain_mask)
@@ -256,6 +296,7 @@ def devel(epoch, dev_set, model, criterion, optimizer):
     inter_p = inter_correct / inter_mask.sum().item()
     inter_f1 = (2 * inter_p * inter_r) / (inter_p + inter_r)
 
+    print("*****************\n")
     print("ALL : Epoch: %s | NT F1: %s | F1: %s | Intra F1: %s | Inter F1: %s | Precision: %s | Recall: %s | AUC: %s | THETA: %s"%(
         str(epoch), str(nt_f1), str(f1_arr[nt_f1_pos]), str(intra_f1), str(inter_f1), str(pr_y[nt_f1_pos]), str(pr_x[nt_f1_pos]), str(auc_score), str(theta)
     ))
@@ -265,37 +306,37 @@ def devel(epoch, dev_set, model, criterion, optimizer):
     return nt_f1, theta, mean_loss
 
 
-def test(test_set, model, theta, id2rel):
+def test(test_set, model, theta):
     model.eval()
 
     test_result = []
     with torch.no_grad():
         for i, batch_data in enumerate(test_set):
-            x_len = batch_data[10]
             L_vertex = batch_data[11]
             titles = batch_data[12]
 
             if use_gpu:
-                batch_data = [data.cuda() for data in batch_data[: -3]]
+                batch_data = [data.cuda() for data in batch_data[: -2]]
 
-            x = batch_data[0]
-            pos = batch_data[1]
-            ner = batch_data[2]
-            w2m_mapping = batch_data[3]
-            mention_bias_mat = batch_data[4]
-            mention_edge_mat = batch_data[5]
-            m2e_mapping = batch_data[6]
-            path_bias_mat = batch_data[7]
-            path_edge_mat = batch_data[8]
-            ht_pos = batch_data[9]
+            input_ids = batch_data[0]
+            pos_ids = batch_data[1]
+            pos = batch_data[2]
+            ner = batch_data[3]
+            w2m_mapping = batch_data[4]
+            mention_bias_mat = batch_data[5]
+            mention_edge_mat = batch_data[6]
+            m2e_mapping = batch_data[7]
+            path_bias_mat = batch_data[8]
+            path_edge_mat = batch_data[9]
+            ht_pos = batch_data[10]
 
             dis = ht_pos
 
             outputs = model(
-                x=x,
+                input_ids=input_ids,
+                pos_ids=pos_ids,
                 ner=ner,
                 pos=pos,
-                x_lens=x_len,
                 w2m_mapping=w2m_mapping,
                 m_bias_mat=mention_bias_mat,
                 m_edge_mat=mention_edge_mat,
@@ -316,7 +357,7 @@ def test(test_set, model, theta, id2rel):
                     for t_idx in range(L):
                         if h_idx != t_idx:
                             for r in range(1, relation_num):
-                                test_result.append((float(outputs[i, h_idx, t_idx, r]), titles[i], id2rel[str(r)],
+                                test_result.append((float(outputs[i, h_idx, t_idx, r]), titles[i], r,
                                                     h_idx, t_idx, r))
 
                             k = k + 1
@@ -340,103 +381,140 @@ def print_params(model):
     print('total trainable parameters:', sum([np.prod(list(p.size())) for p in model.parameters() if p.requires_grad]))
 
 origin_path = 'prepro_data'
-output_path = 'output'
-save_model_path = 'output/model.pt'
+output_path = '../output'
+save_model_path = '../output/model.pt'
 max_len = 512
-relation_num = 97
+relation_num = 2
 h_t_limit = 1800
-batch_size = 8
-epoches = 100
-use_gpu = 0
-device = 0
+batch_size = 4
+epoches = 10
+use_gpu = 1
+device = 1
+seed = 1698064017
 
 def main():
     train_data, dev_data, test_data = read_data(origin_path=origin_path)
-    vec, word2id, ner2id, id2rel = read_vec(origin_path=origin_path)
+    data = train_data + dev_data + test_data
+
+    print("seed: %s" % str(seed))
+    seed_everywhere(seed)
+
+    random.shuffle(data)
+
+    train_data = data[: 1000]
+    dev_data = data[1000: ]
+
+    ner2id = read_vec(origin_path=origin_path)
+
+    # max_mention_num, max_entity_num, label_num = view(train_data)
+    # print("train set max mention num: %s; max entity num: %s, max label num: %s"%(str(max_mention_num), str(max_entity_num), str(label_num)))
+    #
+    # max_mention_num, max_entity_num, label_num = view(dev_data)
+    # print("dev set max mention num: %s; max entity num: %s, max label num: %s" % (
+    # str(max_mention_num), str(max_entity_num), str(label_num)))
+    #
+    # max_mention_num, max_entity_num, label_num = view(test_data)
+    # print("test set max mention num: %s; max entity num: %s, max label num: %s" % (
+    # str(max_mention_num), str(max_entity_num), str(label_num)))
 
     config = Config.config(
-        vec=vec,
         max_len=512,
         relation_num=relation_num,
         h_t_limit=h_t_limit,
         batch_size=batch_size,
-        word2id=word2id,
-        ner2id=ner2id,
-        id2rel=id2rel,
         use_gpu=use_gpu,
+        ner2id=ner2id,
     )
 
     print('Processing Data...')
     process = processing.Process()
 
-    train_set = process.process_train_data(train_data=train_data, config=config)
-    dev_set = process.process_dev_data(dev_data=dev_data, config=config)
-    test_set = process.process_test_data(test_data=test_data, config=config)
+    test_set = process.process_dev_data(dev_data=dev_data, config=config)
 
-    model = Model.Model_GAT(config=config)
-    print_params(model)
+    p_best_f1 = 0.0
 
-    if use_gpu and torch.cuda.is_available():
-        torch.cuda.set_device(device=device)
+    lrs = [1e-5]
+    bert_lrs = [5e-5]
 
-    if use_gpu:
-        model = model.cuda()
+    BEST_F1 = 0.0
+    BEST_LR = 0.0
+    BEST_Bert_LR = 0.0
 
-    criterion = Model.AsymmetricLossOptimized(gamma_neg=3)
+    for lr in lrs:
+        for bert_lr in bert_lrs:
 
-    optimizer = optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.base_lr)
+            model = Model.Model_GAT(config=config)
+            print_params(model)
 
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.8)
+            if use_gpu and torch.cuda.is_available():
+                torch.cuda.set_device(device=device)
 
-    train_loss = []
-    test_loss = []
+            if use_gpu:
+                model = model.cuda()
 
-    best_F1 = 0
-    input_theta = 0
+            criterion = Model.AsymmetricLossOptimized(gamma_neg=3)
 
-    train_index = [i for i in range(len(train_set))]
+            bert_param_ids = list(map(id, model.bert.parameters()))
+            bgat_param_ids = list(map(id, model.bias_gat_layer.parameters()))
+            base_params = filter(lambda p: p.requires_grad and id(p) not in bert_param_ids + bgat_param_ids,
+                                 model.parameters())
 
-    for epoch in range(epoches):
+            optimizer = AdamW([
+                {'params': model.bert.parameters(), 'lr': bert_lr},
+                {'params': model.bias_gat_layer.parameters(), 'lr': lr},
+                {'params': base_params, 'weight_decay': config.lr}
+            ], lr=lr, eps=config.eps)
 
-        random.shuffle(train_index)
+            train_set = process.process_train_data(train_data=train_data, config=config)
 
-        train_epoch_loss = train(train_set=train_set, train_index=train_index, model=model, criterion=criterion, optimizer=optimizer, scheduler=scheduler)
-        train_loss.append(train_epoch_loss)
+            total_steps = len(train_set) * epoches
+            warmup_steps = int(total_steps * config.warmup_ratio)
 
-        f1, theta, test_epoch_loss = devel(epoch=epoch, dev_set=dev_set, model=model, criterion=criterion, optimizer=optimizer)
-        test_loss.append(test_epoch_loss)
+            scheduler = get_linear_schedule_with_warmup(optimizer=optimizer, num_warmup_steps=warmup_steps,
+                                                        num_training_steps=total_steps)
 
-        if f1 > best_F1:
-            best_F1 = f1
-            input_theta = theta
-            torch.save(model.state_dict(), save_model_path)
+            train_loss = []
+            test_loss = []
 
-    print("Best NT F1: %s, Theta: %s"%(str(best_F1), str(input_theta)))
+            best_F1 = 0
+            input_theta = 0
 
-    output = test(test_set=test_set, model=model, theta=input_theta, id2rel=id2rel)
+            train_index = [i for i in range(len(train_set))]
 
-    result_path = output_path + '/' + 'result.json'
-    with open(result_path, "w", encoding="utf-8") as f_write:
-        json.dump(output, f_write)
-    f_write.close()
+            for epoch in range(epoches):
 
-    train_loss_path = output_path + '/' + 'train_loss.csv'
-    with open(train_loss_path, 'a', encoding='utf-8') as f_write:
-        for i, loss in enumerate(train_loss):
-            f_write.write(str(i))
-            f_write.write('\t')
-            f_write.write(str(loss))
-            f_write.write('\n')
-    f_write.close()
+                random.shuffle(train_index)
 
-    test_loss_path = output_path + '/' + 'test_loss.csv'
-    with open(test_loss_path, 'a', encoding='utf-8') as f_write:
-        for i, loss in enumerate(test_loss):
-            f_write.write(str(i))
-            f_write.write('\t')
-            f_write.write(str(loss))
-            f_write.write('\n')
-    f_write.close()
+                train_epoch_loss = train(train_set=train_set, train_index=train_index, model=model,
+                                         criterion=criterion, optimizer=optimizer, scheduler=scheduler)
+                train_loss.append(train_epoch_loss)
+
+                train_set = process.process_train_data(train_data=train_data, config=config)
+
+                print("Test set devel: ")
+                f1, theta, test_epoch_loss = devel(epoch=epoch, dev_set=test_set, model=model,
+                                                   criterion=criterion,
+                                                   optimizer=optimizer)
+                test_loss.append(test_epoch_loss)
+
+                if f1 > best_F1:
+                    best_F1 = f1
+                    input_theta = theta
+
+            print("Best NT F1: %s, Theta: %s" % (str(best_F1), str(input_theta)))
+
+            if BEST_F1 < best_F1:
+                BEST_F1 = best_F1
+                BEST_LR = lr
+                BEST_Bert_LR = bert_lr
+                torch.save(model.state_dict(), save_model_path)
+
+            if BEST_F1 < best_F1:
+                BEST_F1 = best_F1
+                BEST_LR = lr
+                BEST_Bert_LR = bert_lr
+
+    print("BEST LR: %s; BEST Bert LR: %s; BEST F1: %s" % (str(BEST_LR), str(BEST_Bert_LR), str(BEST_F1)))
 
     return
 
