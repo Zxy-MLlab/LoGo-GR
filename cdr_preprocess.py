@@ -5,10 +5,10 @@ import os
 import tqdm
 
 
-origin_path = 'CDR_Data/CDR.Corpus.v010516'
+origin_path = 'data/CDR.Corpus.v010516'
 data_sets = ['CDR_TrainingSet.PubTator.txt', 'CDR_DevelopmentSet.PubTator.txt', 'CDR_TestSet.PubTator.txt']
 
-out_path = 'output'
+out_path = 'prepro_data'
 
 def read_ori(data_set, ):
     dat_set_path = origin_path + '/' + data_set
