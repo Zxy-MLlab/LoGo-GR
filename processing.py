@@ -5,6 +5,7 @@ import copy
 import torch
 import tqdm
 from collections import defaultdict
+from transformers import BertTokenizer
 
 dis2idx = np.zeros((1000), dtype='int64')
 dis2idx[1] = 1
@@ -36,6 +37,9 @@ entity_node2id = {
 
 class Process():
     def __init__(self):
+
+        self.tokenizer = BertTokenizer.from_pretrained("scibert_scivocab_uncased")
+
         return
 
     def process_train_data(self, train_data, config):
@@ -46,7 +50,7 @@ class Process():
         train_data_size = len(train_data)
         train_order = list(range(train_data_size))
 
-        # random.shuffle(train_order)
+        random.shuffle(train_order)
         batch_num = train_data_size // config.batch_size
 
         if train_data_size % batch_num != 0:
@@ -59,11 +63,13 @@ class Process():
             cur_index = min(config.batch_size, train_data_size - start_index)
             cur_order = list(train_order[start_index: start_index + cur_index])
 
-            x = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            pos = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            ner = np.zeros((cur_index, config.max_len), dtype=np.int32)
+            input_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            pos_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
 
-            w2m_mapping = np.zeros((cur_index, config.max_mention_num, config.max_len), dtype=np.bool)
+            pos = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            ner = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+
+            w2m_mapping = np.zeros((cur_index, config.max_mention_num, config.max_tokens), dtype=np.bool)
 
             mention_bias_mat = np.full((cur_index, config.max_mention_num, config.max_mention_num),
                                        fill_value=-9e10)
@@ -81,13 +87,49 @@ class Process():
             relation_multi_label = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.int32)
             relation_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num), dtype=np.bool)
 
-            max_word_num = 0
+            max_token = 0
             max_mention_num = 0
             max_entity_num = 0
             max_ht_mun = 0
 
             for k, index in enumerate(cur_order):
                 ins = train_data[index]
+
+                words = []
+                for sent in ins['sents']:
+                    words += sent
+
+                dl = 0
+                word_dl = []
+                p_id = 0
+
+                _input_ids = []
+                _pos_ids = []
+
+                for w in words:
+                    tokens = self.tokenizer.encode(w, add_special_tokens=False)
+                    _input_ids += tokens
+                    _pos_ids += [p_id] * len(tokens)
+                    word_dl.append([x + dl for x in range(len(tokens))])
+
+                    dl += len(tokens)
+
+                    if len(tokens) > 0:
+                        p_id += 1
+
+                    if p_id >= config.max_len:
+                        break
+
+                _input_ids = [self.tokenizer.cls_token_id] + _input_ids + [self.tokenizer.sep_token_id]
+                _pos_ids = [0] + _pos_ids + [_pos_ids[-1]]
+
+                max_token = max(max_token, len(_input_ids))
+
+                _input_ids = _input_ids + [0 for _ in range(config.max_tokens-len(_input_ids))]
+                _pos_ids = _pos_ids + [0 for _ in range(config.max_tokens-len(_pos_ids))]
+
+                input_ids[k, ] = _input_ids
+                pos_ids[k, ] = _pos_ids
 
                 cur_mention_bias_mat = np.full((config.max_mention_num, config.max_mention_num), fill_value=-9e10)
                 cur_mention_edge_mat = np.zeros((config.max_mention_num, config.max_mention_num), dtype=np.int32)
@@ -96,22 +138,6 @@ class Process():
                                                                                   cur_mention_edge_mat)
                 mention_bias_mat[k,] = cur_mention_bias_mat
                 mention_edge_mat[k,] = cur_mention_edge_mat
-
-                words = []
-                for sent in ins['sents']:
-                    words += sent
-
-                max_word_num = max(len(words), max_word_num)
-                for t, word in enumerate(words):
-                    word = word.lower()
-                    if t < config.max_len:
-                        if word in config.word2id:
-                            x[k, t] = config.word2id[word]
-                        else:
-                            x[k, t] = config.word2id['UNK']
-
-                for t in range(t + 1, config.max_len):
-                    x[k, t] = config.word2id['BLANK']
 
                 mention_num = 0
                 entity_num = 0
@@ -132,11 +158,20 @@ class Process():
 
                     for v in vertex:
                         # context encode layer
-                        pos[k, v['pos'][0]:v['pos'][1]] = idx
-                        ner[k, v['pos'][0]:v['pos'][1]] = config.ner2id[v['type']]
+                        start_index, end_index = v['pos'][0], v['pos'][1]
+
+                        if start_index > config.max_len or end_index > config.max_len:
+                            mention_num = mention_num + 1
+                            continue
+
+                        start_index = word_dl[start_index][0] if len(word_dl[start_index]) else word_dl[start_index + 1][0]
+                        end_index = word_dl[end_index - 1][-1] + 1 if len(word_dl[end_index - 1]) else word_dl[end_index - 2][-1] + 1
+
+                        pos[k, start_index:end_index] = idx
+                        ner[k, start_index:end_index] = config.ner2id[v['type']]
 
                         # w2m mapping layer
-                        w2m_mapping[k, mention_num, v['pos'][0]:v['pos'][1]] = 1
+                        w2m_mapping[k, mention_num, start_index:end_index] = 1
 
                         mention_num = mention_num + 1
 
@@ -193,13 +228,12 @@ class Process():
 
                 max_ht_mun = max(max_ht_mun, j)
 
-            x_lens = (torch.LongTensor(x)[:cur_index] > 0).long().sum(dim=1)
-
             batch_data.append([
-                torch.LongTensor(x[:cur_index, :max_word_num]),
-                torch.LongTensor(pos[:cur_index, :max_word_num]),
-                torch.LongTensor(ner[:cur_index, :max_word_num]),
-                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_word_num]),
+                torch.LongTensor(input_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos[:cur_index, :max_token-2]),
+                torch.LongTensor(ner[:cur_index, :max_token-2]),
+                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_token-2]),
                 torch.FloatTensor(mention_bias_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.LongTensor(mention_edge_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.BoolTensor(m2e_mapping[:cur_index, :max_entity_num, :max_mention_num]),
@@ -208,7 +242,6 @@ class Process():
                 torch.LongTensor(ht_pos[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.FloatTensor(relation_multi_label[:cur_index, :max_entity_num, :max_entity_num, :]),
                 torch.BoolTensor(relation_mask[:cur_index, :max_entity_num, :max_entity_num]),
-                x_lens,
             ])
 
         print("finish!")
@@ -230,16 +263,22 @@ class Process():
 
         batch_index = [i for i in range(batch_num)]
 
+        two_men_num, three_men_num, four_men_num, five_men_num = 0, 0, 0, 0
+        con_num, mp_num, non_num = 0, 0, 0
+        zero_dis_num, one_dis_num, two_dis_num, three_dis_num = 0, 0, 0, 0
+
         for i in tqdm.tqdm(batch_index):
             start_index = i * config.batch_size
             cur_index = min(config.batch_size, test_data_size-start_index)
             cur_order = list(test_order[start_index: start_index+cur_index])
 
-            x = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            pos = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            ner = np.zeros((cur_index, config.max_len), dtype=np.int32)
+            input_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            pos_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
 
-            w2m_mapping = np.zeros((cur_index, config.max_len, config.max_len), dtype=np.bool)
+            pos = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            ner = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+
+            w2m_mapping = np.zeros((cur_index, config.max_mention_num, config.max_tokens), dtype=np.bool)
 
             mention_bias_mat = np.full((cur_index, config.max_mention_num, config.max_mention_num), fill_value=-9e10)
             mention_edge_mat = np.zeros((cur_index, config.max_mention_num, config.max_mention_num), dtype=np.int32)
@@ -256,11 +295,29 @@ class Process():
             intra_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
             inter_mask = np.ones((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
             intrain_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
-            
+
+            two_men_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            three_men_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            four_men_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            five_men_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+
+            con_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            mp_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            non_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+
+            zero_dis_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.bool)
+            one_dis_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num),
+                                     dtype=np.bool)
+            two_dis_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num),
+                                     dtype=np.bool)
+            three_dis_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num),
+                                     dtype=np.bool)
+
             relation_multi_label = np.zeros((cur_index, config.max_entity_num, config.max_entity_num, config.relation_num), dtype=np.float32)
             relation_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num), dtype=np.bool)
+            predict_mask = np.zeros((cur_index, config.max_entity_num, config.max_entity_num), dtype=np.bool)
 
-            max_word_num = 0
+            max_token = 0
             max_mention_num = 0
             max_entity_num = 0
             max_ht_mun = 0
@@ -274,28 +331,48 @@ class Process():
             for k, index in enumerate(cur_order):
                 ins = dev_data[index]
 
+                words = []
+                for sent in ins['sents']:
+                    words += sent
+
+                dl = 0
+                word_dl = []
+                p_id = 0
+
+                _input_ids = []
+                _pos_ids = []
+
+                for w in words:
+                    tokens = self.tokenizer.encode(w, add_special_tokens=False)
+                    _input_ids += tokens
+                    _pos_ids += [p_id] * len(tokens)
+                    word_dl.append([x + dl for x in range(len(tokens))])
+
+                    dl += len(tokens)
+
+                    if len(tokens) > 0:
+                        p_id += 1
+
+                    if p_id >= config.max_len:
+                        break
+
+                _input_ids = [self.tokenizer.cls_token_id] + _input_ids + [self.tokenizer.sep_token_id]
+                _pos_ids = [0] + _pos_ids + [_pos_ids[-1]]
+
+                max_token = max(max_token, len(_input_ids))
+
+                _input_ids = _input_ids + [0 for _ in range(config.max_tokens - len(_input_ids))]
+                _pos_ids = _pos_ids + [0 for _ in range(config.max_tokens - len(_pos_ids))]
+
+                input_ids[k,] = _input_ids
+                pos_ids[k,] = _pos_ids
+
                 cur_mention_bias_mat = np.full((config.max_mention_num, config.max_mention_num), fill_value=-9e10)
                 cur_mention_edge_mat = np.zeros((config.max_mention_num, config.max_mention_num), dtype=np.int32)
 
                 cur_mention_bias_mat ,cur_mention_edge_mat = create_mention_graph(ins, cur_mention_bias_mat ,cur_mention_edge_mat)
                 mention_bias_mat[k, ] = cur_mention_bias_mat
                 mention_edge_mat[k, ] = cur_mention_edge_mat
-
-                words = []
-                for sent in ins['sents']:
-                    words += sent
-
-                max_word_num = max(len(words), max_word_num)
-                for t, word in enumerate(words):
-                    word = word.lower()
-                    if t < config.max_len:
-                        if word in config.word2id:
-                            x[k, t] = config.word2id[word]
-                        else:
-                            x[k, t] = config.word2id['UNK']
-
-                for t in range(t+1, config.max_len):
-                    x[k, t] = config.word2id['BLANK']
 
                 mention_num = 0
                 entity_num = 0
@@ -315,11 +392,22 @@ class Process():
 
                     for v in vertex:
                         # context encode layer
-                        pos[k, v['pos'][0]:v['pos'][1]] = idx
-                        ner[k, v['pos'][0]:v['pos'][1]] = config.ner2id[v['type']]
+                        start_index, end_index = v['pos'][0], v['pos'][1]
+
+                        if start_index > config.max_len or end_index > config.max_len:
+                            mention_num = mention_num + 1
+                            continue
+
+                        start_index = word_dl[start_index][0] if len(word_dl[start_index]) else \
+                        word_dl[start_index + 1][0]
+                        end_index = word_dl[end_index - 1][-1] + 1 if len(word_dl[end_index - 1]) else \
+                        word_dl[end_index - 2][-1] + 1
+
+                        pos[k, start_index:end_index] = idx
+                        ner[k, start_index:end_index] = config.ner2id[v['type']]
 
                         # w2m mapping layer
-                        w2m_mapping[k, mention_num, v['pos'][0]:v['pos'][1]] = 1
+                        w2m_mapping[k, mention_num, start_index:end_index] = 1
 
                         mention_num = mention_num + 1
 
@@ -365,8 +453,13 @@ class Process():
                     relation_multi_label[k, h, t, r] = 1
 
                 j = 0
+
+                con_path, two_path, three_path = get_entity_type(ins)
                 for h_idx in range(entity_num):
                     for t_idx in range(entity_num):
+
+                        if (vertexSet[h_idx][0]['type'] == 'Chemical') and (vertexSet[t_idx][0]['type'] == 'Disease'):
+                            predict_mask[k, h_idx, t_idx] = 1
                         
                         relation_mask[k, h_idx, t_idx] = 1
                         
@@ -383,6 +476,48 @@ class Process():
 
                             j = j + 1
 
+                            if (len(vertexSet[h_idx]) + len(vertexSet[t_idx])) == 2:
+                                two_men_mask[k, h_idx, t_idx] = True
+                                two_men_num += 1
+                            elif (len(vertexSet[h_idx]) + len(vertexSet[t_idx])) == 3:
+                                three_men_mask[k, h_idx, t_idx] = True
+                                three_men_num += 1
+                            elif (len(vertexSet[h_idx]) + len(vertexSet[t_idx])) == 4:
+                                four_men_mask[k, h_idx, t_idx] = True
+                                four_men_num += 1
+                            else:
+                                five_men_mask[k, h_idx, t_idx] = True
+                                five_men_num += 1
+
+                            if t_idx in con_path[h_idx]:
+                                con_mask[k, h_idx, t_idx] = True
+                                con_num += 1
+                            elif (t_idx in two_path[h_idx]) or (t_idx in three_path[h_idx]):
+                                mp_mask[k, h_idx, t_idx] = True
+                                mp_num += 1
+                            else:
+                                non_mask[k, h_idx, t_idx] = True
+                                non_num += 1
+
+                            min_h_t_dis = 1000
+                            for men_h in hlist:
+                                for men_t in tlist:
+                                    h_t_dis = abs(men_t['sent_id'] - men_h['sent_id'])
+                                    min_h_t_dis = min(min_h_t_dis, h_t_dis)
+
+                            if min_h_t_dis == 0:
+                                zero_dis_mask[k, h_idx, t_idx] = True
+                                zero_dis_num += 1
+                            elif min_h_t_dis == 1:
+                                one_dis_mask[k, h_idx, t_idx] = True
+                                one_dis_num += 1
+                            elif min_h_t_dis == 2:
+                                two_dis_mask[k, h_idx, t_idx] = True
+                                two_dis_num += 1
+                            else:
+                                three_dis_mask[k, h_idx, t_idx] = True
+                                three_dis_num += 1
+
                 max_ht_mun = max(max_ht_mun, j)
 
                 label_set = {}
@@ -397,13 +532,12 @@ class Process():
                 titles.append(title)
                 indexes.append(index)
 
-            x_lens = (torch.LongTensor(x)[:cur_index] > 0).long().sum(dim=1)
-
             batch_data.append([
-                torch.LongTensor(x[:cur_index, :max_word_num]),
-                torch.LongTensor(pos[:cur_index, :max_word_num]),
-                torch.LongTensor(ner[:cur_index, :max_word_num]),
-                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_word_num]),
+                torch.LongTensor(input_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos[:cur_index, :max_token-2]),
+                torch.LongTensor(ner[:cur_index, :max_token-2]),
+                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_token-2]),
                 torch.FloatTensor(mention_bias_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.LongTensor(mention_edge_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.BoolTensor(m2e_mapping[:cur_index, :max_entity_num, :max_mention_num]),
@@ -413,14 +547,40 @@ class Process():
                 torch.BoolTensor(intra_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
                 torch.BoolTensor(inter_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
                 torch.BoolTensor(intrain_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(two_men_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(three_men_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(four_men_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(five_men_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(con_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(mp_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(non_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(zero_dis_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(one_dis_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(two_dis_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
+                torch.BoolTensor(three_dis_mask[:cur_index, :max_entity_num, :max_entity_num, :]),
                 torch.FloatTensor(relation_multi_label[:cur_index, :max_entity_num, :max_entity_num, :]),
                 torch.BoolTensor(relation_mask[:cur_index, :max_entity_num, :max_entity_num]),
+                torch.BoolTensor(predict_mask[:cur_index, :max_entity_num, :max_entity_num]),
                 labels,
                 L_vertex,
                 titles,
                 indexes,
-                x_lens,
             ])
+
+        print(two_men_num)
+        print(three_men_num)
+        print(four_men_num)
+        print(five_men_num)
+        print()
+        print(con_num)
+        print(mp_num)
+        print(non_num)
+        print()
+        print(zero_dis_num)
+        print(one_dis_num)
+        print(two_dis_num)
+        print(three_dis_num)
+        print()
 
         return batch_data
 
@@ -446,11 +606,13 @@ class Process():
             cur_index = min(config.batch_size, train_data_size - start_index)
             cur_order = list(train_order[start_index: start_index + cur_index])
 
-            x = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            pos = np.zeros((cur_index, config.max_len), dtype=np.int32)
-            ner = np.zeros((cur_index, config.max_len), dtype=np.int32)
+            input_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            pos_ids = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
 
-            w2m_mapping = np.zeros((cur_index, config.max_mention_num, config.max_len), dtype=np.bool)
+            pos = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+            ner = np.zeros((cur_index, config.max_tokens), dtype=np.int32)
+
+            w2m_mapping = np.zeros((cur_index, config.max_mention_num, config.max_tokens), dtype=np.bool)
 
             mention_bias_mat = np.full((cur_index, config.max_mention_num, config.max_mention_num),
                                        fill_value=-9e10)
@@ -465,7 +627,7 @@ class Process():
 
             ht_pos = np.zeros((cur_index, config.max_mention_num, config.max_mention_num), dtype=np.int32)
 
-            max_word_num = 0
+            max_token = 0
             max_mention_num = 0
             max_entity_num = 0
             max_ht_mun = 0
@@ -476,6 +638,42 @@ class Process():
             for k, index in enumerate(cur_order):
                 ins = test_data[index]
 
+                words = []
+                for sent in ins['sents']:
+                    words += sent
+
+                dl = 0
+                word_dl = []
+                p_id = 0
+
+                _input_ids = []
+                _pos_ids = []
+
+                for w in words:
+                    tokens = self.tokenizer.encode(w, add_special_tokens=False)
+                    _input_ids += tokens
+                    _pos_ids += [p_id] * len(tokens)
+                    word_dl.append([x + dl for x in range(len(tokens))])
+
+                    dl += len(tokens)
+
+                    if len(tokens) > 0:
+                        p_id += 1
+
+                    if p_id >= config.max_len:
+                        break
+
+                _input_ids = [self.tokenizer.cls_token_id] + _input_ids + [self.tokenizer.sep_token_id]
+                _pos_ids = [0] + _pos_ids + [_pos_ids[-1]]
+
+                max_token = max(max_token, len(_input_ids))
+
+                _input_ids = _input_ids + [0 for _ in range(config.max_tokens - len(_input_ids))]
+                _pos_ids = _pos_ids + [0 for _ in range(config.max_tokens - len(_pos_ids))]
+
+                input_ids[k,] = _input_ids
+                pos_ids[k,] = _pos_ids
+
                 cur_mention_bias_mat = np.full((config.max_mention_num, config.max_mention_num), fill_value=-9e10)
                 cur_mention_edge_mat = np.zeros((config.max_mention_num, config.max_mention_num), dtype=np.int32)
 
@@ -483,22 +681,6 @@ class Process():
                                                                                   cur_mention_edge_mat)
                 mention_bias_mat[k,] = cur_mention_bias_mat
                 mention_edge_mat[k,] = cur_mention_edge_mat
-
-                words = []
-                for sent in ins['sents']:
-                    words += sent
-
-                max_word_num = max(len(words), max_word_num)
-                for t, word in enumerate(words):
-                    word = word.lower()
-                    if t < config.max_len:
-                        if word in config.word2id:
-                            x[k, t] = config.word2id[word]
-                        else:
-                            x[k, t] = config.word2id['UNK']
-
-                for t in range(t + 1, config.max_len):
-                    x[k, t] = config.word2id['BLANK']
 
                 mention_num = 0
                 entity_num = 0
@@ -519,11 +701,22 @@ class Process():
 
                     for v in vertex:
                         # context encode layer
-                        pos[k, v['pos'][0]:v['pos'][1]] = idx
-                        ner[k, v['pos'][0]:v['pos'][1]] = config.ner2id[v['type']]
+                        start_index, end_index = v['pos'][0], v['pos'][1]
+
+                        if start_index > config.max_len or end_index > config.max_len:
+                            mention_num = mention_num + 1
+                            continue
+
+                        start_index = word_dl[start_index][0] if len(word_dl[start_index]) else \
+                        word_dl[start_index + 1][0]
+                        end_index = word_dl[end_index - 1][-1] + 1 if len(word_dl[end_index - 1]) else \
+                        word_dl[end_index - 2][-1] + 1
+
+                        pos[k, start_index:end_index] = idx
+                        ner[k, start_index:end_index] = config.ner2id[v['type']]
 
                         # w2m mapping layer
-                        w2m_mapping[k, mention_num, v['pos'][0]:v['pos'][1]] = 1
+                        w2m_mapping[k, mention_num, start_index:end_index] = 1
 
                         mention_num = mention_num + 1
 
@@ -570,20 +763,18 @@ class Process():
                 title = ins['title']
                 titles.append(title)
 
-            x_lens = (torch.LongTensor(x)[:cur_index] > 0).long().sum(dim=1)
-
             batch_data.append([
-                torch.LongTensor(x[:cur_index, :max_word_num]),
-                torch.LongTensor(pos[:cur_index, :max_word_num]),
-                torch.LongTensor(ner[:cur_index, :max_word_num]),
-                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_word_num]),
+                torch.LongTensor(input_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos_ids[:cur_index, :max_token]),
+                torch.LongTensor(pos[:cur_index, :max_token-2]),
+                torch.LongTensor(ner[:cur_index, :max_token-2]),
+                torch.BoolTensor(w2m_mapping[:cur_index, :max_mention_num, :max_token-2]),
                 torch.FloatTensor(mention_bias_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.LongTensor(mention_edge_mat[:cur_index, :max_mention_num, :max_mention_num]),
                 torch.BoolTensor(m2e_mapping[:cur_index, :max_entity_num, :max_mention_num]),
                 torch.FloatTensor(path_bias_mat[:cur_index, :max_mention_num, :max_mention_num, :max_mention_num]),
                 torch.LongTensor(path_edge_mat[:cur_index, :max_mention_num, :max_mention_num, :max_mention_num]),
                 torch.LongTensor(ht_pos[:cur_index, :max_mention_num, :max_mention_num]),
-                x_lens,
                 L_vertex,
                 titles,
             ])
@@ -795,3 +986,96 @@ def create_e2e_graph(ins, cur_p_bias_mat, cur_p_edge_mat, entity_num, men_to_ent
                                 entity_node2id['start']
 
     return cur_p_bias_mat, cur_p_edge_mat
+
+def get_entity_type(ins):
+    sents = ins['sents']
+
+    nodes = [[] for _ in range(len(ins['sents']))]
+    e2e_sent = defaultdict(dict)
+
+    for ns_no, ns in enumerate(ins['vertexSet']):
+        for n in ns:
+            sent_id = int(n['sent_id'])
+            nodes[sent_id].append(ns_no)
+
+    for sent_id in range(len(sents)):
+        for n1 in nodes[sent_id]:
+            for n2 in nodes[sent_id]:
+                if n1 == n2:
+                    continue
+                if n2 not in e2e_sent[n1]:
+                    e2e_sent[n1][n2] = set()
+                e2e_sent[n1][n2].add(sent_id)
+
+    # 2-hop graph
+    path_two = defaultdict(dict)
+    entityNum = len(ins['vertexSet'])
+    for n1 in range(entityNum):
+        for n2 in range(entityNum):
+            if n1 == n2:
+                continue
+            for n3 in range(entityNum):
+                if n3 == n1 or n3 == n2:
+                    continue
+                if not (n3 in e2e_sent[n1] and n2 in e2e_sent[n3]):
+                    continue
+
+                for s1 in e2e_sent[n1][n3]:
+                    for s2 in e2e_sent[n3][n2]:
+                        if s1 == s2:
+                            continue
+
+                        if n2 not in path_two[n1]:
+                            path_two[n1][n2] = []
+                        cand_sents = [s1, s2]
+                        cand_sents.sort()
+
+                        path_two[n1][n2].append((cand_sents, n3))
+
+    # 3-hop graph
+    path_three = defaultdict(dict)
+    for n1 in range(entityNum):
+        for n2 in range(entityNum):
+            if n1 == n2:
+                continue
+            for n3 in range(entityNum):
+                if n3 == n1 or n3 == n2:
+                    continue
+                if n3 in e2e_sent[n1] and n2 in path_two[n3]:
+                    for cand1 in e2e_sent[n1][n3]:
+                        for cand2 in path_two[n3][n2]:
+                            if cand1 in cand2[0]:
+                                continue
+
+                            if cand2[1] == n1:
+                                continue
+
+                            if n2 not in path_three[n1]:
+                                path_three[n1][n2] = []
+                            cand_sents = [cand1] + cand2[0]
+                            cand_sents.sort()
+
+                            path_three[n1][n2].append((cand_sents, [n3, cand2[1]]))
+
+    # Consecutive graph
+    consecutive = defaultdict(dict)
+    for h in range(entityNum):
+        for t in range(h + 1, entityNum):
+            for n1 in ins['vertexSet'][h]:
+                for n2 in ins['vertexSet'][t]:
+                    gap = abs(n1['sent_id'] - n2['sent_id'])
+                    if gap > 1:
+                        continue
+
+                    if t not in consecutive[h]:
+                        consecutive[h][t] = []
+                        consecutive[t][h] = []
+                    if n1['sent_id'] < n2['sent_id']:
+                        beg, end = n1['sent_id'], n2['sent_id']
+                    else:
+                        beg, end = n2['sent_id'], n1['sent_id']
+
+                    consecutive[h][t].append([[i for i in range(beg, end + 1)]])
+                    consecutive[t][h].append([[i for i in range(beg, end + 1)]])
+
+    return consecutive, path_two, path_three
