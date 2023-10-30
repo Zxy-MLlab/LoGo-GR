@@ -24,9 +24,18 @@ Download CDR dataset from URL: [](https://biocreative.bioinformatics.udel.edu/me
 
 Download GDA dataset from URL: [](https://bitbucket.org/alexwuhkucs/gda-extraction/get/fd4a7409365e.zip)https://bitbucket.org/alexwuhkucs/gda-extraction/get/fd4a7409365e.zip,
 
-Download DocRED dataset from URL: [](https://github.com/thunlp/DocRED)https://github.com/thunlp/DocRED ,
+Download DocRED dataset from URL: [](https://github.com/thunlp/DocRED)https://github.com/thunlp/DocRED .
 
-and place the file in the data folder.
+Please extract the downloaded dataset file and place it in the ./data folder, as shown below:
+
+For CDR dataset:
+```
+--data
+  --CDR_data
+    --CDR_DevelopmentSet.PubTator.txt
+    --CDR_TrainingSet.PubTator.txt
+    --CDR_TestSet.PubTator.txt
+```
 
 # Pretrain Language model
 Download scibert or bert models from URL: [](https://huggingface.co/allenai/scibert_scivocab_uncased)https://huggingface.co/allenai/scibert_scivocab_uncased or [](https://huggingface.co/bert-base-uncased)https://huggingface.co/bert-base-uncased.
@@ -51,10 +60,22 @@ or preprocessing DocRED dataset:
 python doc_preprocessing.py
 ```
 
+When the program is finished, the following files are written to the ./prepro_data folder:
+```
+--CDR_DevelopmentSet.PubTator.json
+--CDR_TrainingSet.PubTator.json
+--CDR_TestSet.PubTator.json
+```
+
 # Runnning
 
 Run the main.py file to train and test the model:
 ```python
 python main.py
 ```
-For different datasets, you can modify the hyperparameters for program execution in the Config.py file.
+
+# Results
+```
+...
+BEST: Epoch: 36 | NT F1: 0.7071072883657764 | F1: 0.7071072883657764 | Intra F1: 0.7372654155495979 | Inter F1: 0.6424581005586593 | Precision: 0.696078431372549 | Recall: 0.718491260349586 | AUC: 0.6109029466769528 | THETA: 0.9996838569641113
+```
