@@ -33,6 +33,27 @@ Download scibert or bert models from URL: [](https://huggingface.co/allenai/scib
 
 # Preprocessing data
 To process the dataset, execute the following code:
+
+preprocessing DV dataset:
+```python
+python dv_preprocessing.py
+```
+or preprocessing CDR dataset:
 ```python
 python cdr_preprocessing.py
+```
+or preprocessing GDA dataset:
+```python
+python gda_preprocessing.py
+```
+or preprocessing DocRED dataset:
+```python
+python doc_preprocessing.py
+```
+
+# Runnning
+
+Run the main.py file to train and test the model:
+```python
+python main.py
 ```
