@@ -1,7 +1,7 @@
 # LoGo-GR
 Local to global graphical reasoning framework for extracting structured information from biomedical literature
 
-# requirement
+# Requirement
 ```python 
 python==3.8 
 
