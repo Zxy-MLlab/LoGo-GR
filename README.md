@@ -18,7 +18,7 @@ stanfordcorenlp
 ```
 
 # Dataload
-Download DV dataset from URL: xxx
+Download DV dataset reference: Cross-Sentence N-ary Relation Extraction with Graph LSTMs,
 
 Download CDR dataset from URL: [](https://biocreative.bioinformatics.udel.edu/media/store/files/2016/CDR_Data.zip)https://biocreative.bioinformatics.udel.edu/media/store/files/2016/CDR_Data.zip, 
 
@@ -29,7 +29,7 @@ Download DocRED dataset from URL: [](https://github.com/thunlp/DocRED)https://gi
 and place the file in the data folder.
 
 # Pretrain Language model
-Download scibert or bert models from URL: [](https://huggingface.co/allenai/scibert_scivocab_uncased)https://huggingface.co/allenai/scibert_scivocab_uncased or xxx.
+Download scibert or bert models from URL: [](https://huggingface.co/allenai/scibert_scivocab_uncased)https://huggingface.co/allenai/scibert_scivocab_uncased or [](https://huggingface.co/bert-base-uncased)https://huggingface.co/bert-base-uncased.
 
 # Preprocessing data
 To process the dataset, execute the following code:
@@ -57,3 +57,4 @@ Run the main.py file to train and test the model:
 ```python
 python main.py
 ```
+For different datasets, you can modify the hyperparameters for program execution in the Config.py file.
