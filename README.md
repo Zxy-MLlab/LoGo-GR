@@ -18,4 +18,21 @@ stanfordcorenlp
 ```
 
 # Dataload
-Download CDR dataset from URL: xxx, and and place the file in the data folder.
+Download DV dataset from URL: xxx
+
+Download CDR dataset from URL: [](https://biocreative.bioinformatics.udel.edu/media/store/files/2016/CDR_Data.zip)https://biocreative.bioinformatics.udel.edu/media/store/files/2016/CDR_Data.zip, 
+
+Download GDA dataset from URL: [](https://bitbucket.org/alexwuhkucs/gda-extraction/get/fd4a7409365e.zip)https://bitbucket.org/alexwuhkucs/gda-extraction/get/fd4a7409365e.zip,
+
+Download DocRED dataset from URL: [](https://github.com/thunlp/DocRED)https://github.com/thunlp/DocRED ,
+
+and place the file in the data folder.
+
+# Pretrain Language model
+Download scibert or bert models from URL: [](https://huggingface.co/allenai/scibert_scivocab_uncased)https://huggingface.co/allenai/scibert_scivocab_uncased or xxx.
+
+# Preprocessing data
+To process the dataset, execute the following code:
+```python
+python cdr_preprocessing.py
+```
