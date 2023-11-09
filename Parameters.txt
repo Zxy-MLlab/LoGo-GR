@@ -1,0 +1,16 @@
+Parameter Name	DV	CDR	GDA	DocRED
+Batch size		4	4	4	4
+Max length	512	512	512	512
+Relation num	2/5	2	2	2
+Word embedding size	768	768	768	100(GloVe)/768(BERT)
+Entity type embedding size	20	20	20	20
+Distance embedding size	20	20	20	20
+Output channel size in B-GAT	128	128	128	128
+Hidden layer size	394	394	394	394
+Layer num	3	3	3	3
+Dropout for B-GAT	0.5	0.5	0.5	0.5
+Dropout for other layer	0.33	0.33	0.33	0.33
+Learning rate for BERT	1e-5	5e-6	1e-5	1e-4
+Learning rate for other	5e-5	1e-5	5e-5	5e-3
+Weight decay	1e-5	1e-5	1e-5	1e-5
+Train epoch	35	50	25	50
